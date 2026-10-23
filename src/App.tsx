@@ -62,7 +62,12 @@ export default function App() {
 
   // App Navigation & Modals
   const [currentTab, setCurrentTab] = useState<AppTab>('cards');
-  const [isPhoneFrame, setIsPhoneFrame] = useState(true);
+  const [isPhoneFrame, setIsPhoneFrame] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return window.innerWidth >= 768;
+    }
+    return false;
+  });
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   const [selectedCard, setSelectedCard] = useState<BusinessCardData | null>(null);
   const [isDetailOpen, setIsDetailOpen] = useState(false);

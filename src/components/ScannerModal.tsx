@@ -1,5 +1,19 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Camera, Upload, Flashlight, RefreshCw, X, Check, Image as ImageIcon, Sparkles, Layers, Sliders } from 'lucide-react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import {
+  Camera,
+  Upload,
+  Flashlight,
+  RefreshCw,
+  X,
+  Check,
+  Image as ImageIcon,
+  Sparkles,
+  Layers,
+  SwitchCamera,
+  Play,
+  AlertCircle,
+  Smartphone,
+} from 'lucide-react';
 import { BusinessCardData } from '../types';
 import { SAMPLE_CARDS } from '../data/sampleCards';
 
@@ -15,66 +29,149 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
   onCardScanned,
 }) => {
   const [cameraActive, setCameraActive] = useState(false);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment');
   const [torchOn, setTorchOn] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingStage, setProcessingStage] = useState('');
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
-  const [activeFilter, setActiveFilter] = useState<'normal' | 'contrast' | 'bw'>('normal');
   const [batchMode, setBatchMode] = useState(false);
   const [batchCount, setBatchCount] = useState(0);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const galleryInputRef = useRef<HTMLInputElement | null>(null);
+  const nativeCameraInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Start camera on modal open
+  // Stop current stream
+  const stopCamera = useCallback(() => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => {
+        try {
+          track.stop();
+        } catch (e) {
+          console.warn('Error stopping track:', e);
+        }
+      });
+      streamRef.current = null;
+    }
+    if (videoRef.current) {
+      try {
+        videoRef.current.srcObject = null;
+      } catch (e) {
+        // ignore
+      }
+    }
+    setCameraActive(false);
+    setIsPlaying(false);
+    setTorchOn(false);
+  }, []);
+
+  // Start camera stream with multi-level fallbacks
+  const startCamera = useCallback(async (desiredFacing = facingMode) => {
+    setCameraError(null);
+    stopCamera();
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setCameraError('이 브라우저는 카메라 스트림을 지원하지 않습니다. 아래 버튼으로 스마트폰 카메라를 직접 실행해주세요.');
+      return;
+    }
+
+    const constraintsList = [
+      // 1. Ideal environment resolution
+      {
+        video: {
+          facingMode: { ideal: desiredFacing },
+          width: { ideal: 1920, min: 640 },
+          height: { ideal: 1080, min: 480 },
+        },
+        audio: false,
+      },
+      // 2. Exact or standard facingMode
+      {
+        video: {
+          facingMode: desiredFacing,
+        },
+        audio: false,
+      },
+      // 3. Fallback generic video
+      {
+        video: true,
+        audio: false,
+      },
+    ];
+
+    let stream: MediaStream | null = null;
+    let lastError: any = null;
+
+    for (const constraints of constraintsList) {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
+        if (stream) break;
+      } catch (err) {
+        lastError = err;
+      }
+    }
+
+    if (!stream) {
+      console.warn('All camera constraints failed:', lastError);
+      setCameraError(
+        '카메라 권한이 거부되었거나 인앱 브라우저에서 스트림이 차단되었습니다. [스마트폰 카메라로 촬영] 버튼으로 바로 촬영할 수 있습니다.'
+      );
+      setCameraActive(false);
+      return;
+    }
+
+    streamRef.current = stream;
+    setCameraActive(true);
+
+    const video = videoRef.current;
+    if (video) {
+      video.srcObject = stream;
+      video.muted = true;
+      video.playsInline = true;
+      video.setAttribute('playsinline', 'true');
+      video.setAttribute('webkit-playsinline', 'true');
+
+      try {
+        await video.play();
+        setIsPlaying(true);
+      } catch (playErr) {
+        console.warn('video.play() failed on initial attach, awaiting user touch:', playErr);
+        setIsPlaying(false);
+      }
+    }
+  }, [facingMode, stopCamera]);
+
+  // Start on modal open
   useEffect(() => {
     if (isOpen) {
+      setCapturedImage(null);
+      setIsProcessing(false);
       startCamera();
     } else {
       stopCamera();
-      setCapturedImage(null);
-      setIsProcessing(false);
     }
     return () => {
       stopCamera();
     };
-  }, [isOpen]);
+  }, [isOpen, startCamera, stopCamera]);
 
-  const startCamera = async () => {
-    try {
-      if (streamRef.current) {
-        stopCamera();
+  // Play video manually on tap if browser suspended autoplay
+  const handleResumeVideo = async () => {
+    if (videoRef.current) {
+      try {
+        videoRef.current.muted = true;
+        await videoRef.current.play();
+        setIsPlaying(true);
+      } catch (e) {
+        console.warn('Manual play failed:', e);
       }
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: { ideal: 'environment' },
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
-        },
-        audio: false,
-      });
-      streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        videoRef.current.play();
-      }
-      setCameraActive(true);
-    } catch (err) {
-      console.warn('Camera access not granted or not available:', err);
-      setCameraActive(false);
     }
   };
 
-  const stopCamera = () => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
-    }
-    setCameraActive(false);
-  };
-
+  // Toggle Torch/Flash
   const toggleTorch = async () => {
     if (!streamRef.current) return;
     const track = streamRef.current.getVideoTracks()[0];
@@ -96,26 +193,47 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
     }
   };
 
-  // Capture frame from video stream
-  const captureFrame = () => {
-    if (!videoRef.current) return;
-    const video = videoRef.current;
-    const canvas = document.createElement('canvas');
-    canvas.width = video.videoWidth || 1280;
-    canvas.height = video.videoHeight || 720;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
-    setCapturedImage(dataUrl);
-    processCardImage(dataUrl);
+  // Switch between Rear (environment) and Front (user) camera
+  const handleSwitchCamera = () => {
+    const nextFacing = facingMode === 'environment' ? 'user' : 'environment';
+    setFacingMode(nextFacing);
+    startCamera(nextFacing);
   };
 
-  // Upload file from gallery
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Primary Shutter capture
+  const handleShutterClick = () => {
+    const video = videoRef.current;
+
+    // Check if video is playing with valid dimension
+    if (video && video.readyState >= 2 && video.videoWidth > 0 && !video.paused) {
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+          setCapturedImage(dataUrl);
+          processCardImage(dataUrl);
+          return;
+        }
+      } catch (err) {
+        console.warn('Canvas capture error:', err);
+      }
+    }
+
+    // If stream is not active or frame cannot be grabbed, open native mobile camera!
+    nativeCameraInputRef.current?.click();
+  };
+
+  // Handle image selected from native camera or album
+  const handleImageFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    // Reset input value so same photo can be re-selected if needed
+    e.target.value = '';
 
     const reader = new FileReader();
     reader.onload = (event) => {
@@ -127,12 +245,11 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
   };
 
   // Quick select a sample card for instant demo testing
-  const handleSelectSample = (sample: typeof SAMPLE_CARDS[0]) => {
+  const handleSelectSample = (sample: (typeof SAMPLE_CARDS)[0]) => {
     setIsProcessing(true);
     setProcessingStage('샘플 명함 로드 및 OCR 분석 중...');
 
     setTimeout(() => {
-      // Create fresh card instance with timestamp
       const cardCopy: BusinessCardData = {
         ...sample,
         id: 'card_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
@@ -162,10 +279,10 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
   // Send to server-side Gemini OCR endpoint
   const processCardImage = async (base64Img: string) => {
     setIsProcessing(true);
-    setProcessingStage('명함 윤곽 검출 및 이미지 향상 중...');
+    setProcessingStage('명함 윤곽 검출 및 고화질 향상 중...');
 
     try {
-      setTimeout(() => setProcessingStage('CamCard2Json OCR 엔터티 분석 중...'), 400);
+      setTimeout(() => setProcessingStage('CamCard2Json OCR 엔터티 분석 중...'), 350);
 
       const res = await fetch('/api/card-to-json', {
         method: 'POST',
@@ -233,13 +350,12 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
           } else {
             onClose();
           }
-        }, 500);
+        }, 400);
       } else {
         throw new Error(result.error || 'OCR 분석 실패');
       }
     } catch (err: any) {
       console.error('Scan processing error:', err);
-      // Fallback: create mock recognized card
       const fallbackCard: BusinessCardData = {
         id: 'card_' + Date.now(),
         name: { fullName: '스캔 명함', firstName: '', lastName: '' },
@@ -264,38 +380,66 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/95 flex flex-col justify-between overflow-hidden animate-in fade-in duration-200">
-      {/* Top Header Controls */}
-      <div className="px-4 py-3 bg-slate-950/80 backdrop-blur-md flex items-center justify-between z-20 border-b border-slate-800">
+    <div className="fixed inset-0 z-50 bg-black flex flex-col justify-between overflow-hidden select-none animate-in fade-in duration-200">
+      {/* Hidden Native Camera Input (Triggers phone's native camera app on Android/iOS) */}
+      <input
+        ref={nativeCameraInputRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        onChange={handleImageFileChange}
+        className="hidden"
+      />
+
+      {/* Hidden Gallery Input */}
+      <input
+        ref={galleryInputRef}
+        type="file"
+        accept="image/*"
+        onChange={handleImageFileChange}
+        className="hidden"
+      />
+
+      {/* Top Header Bar */}
+      <div className="px-4 py-3 bg-slate-950/90 backdrop-blur-md flex items-center justify-between z-20 border-b border-slate-800 shrink-0">
         <div className="flex items-center gap-2">
-          <div className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping" />
+          <div className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
           <span className="font-semibold text-sm text-slate-100">CamCard 명함 스캐너</span>
           {batchMode && (
-            <span className="text-[11px] bg-emerald-900/60 text-emerald-300 px-2 py-0.5 rounded-full font-mono">
-              연속 스캔 ({batchCount}장)
+            <span className="text-[10px] bg-emerald-900/60 text-emerald-300 px-2 py-0.5 rounded-full font-mono">
+              연속 {batchCount}장
             </span>
           )}
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
+          {/* Switch Camera */}
+          <button
+            onClick={handleSwitchCamera}
+            className="p-2 rounded-full bg-slate-800/80 text-slate-300 hover:text-white transition-colors"
+            title="전면/후면 카메라 전환"
+          >
+            <SwitchCamera className="w-4 h-4" />
+          </button>
+
           {/* Batch Mode Toggle */}
           <button
             onClick={() => setBatchMode(!batchMode)}
-            className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors flex items-center gap-1 border ${
+            className={`px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors flex items-center gap-1 border ${
               batchMode
                 ? 'bg-emerald-600 text-white border-emerald-500'
                 : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
             }`}
           >
             <Layers className="w-3.5 h-3.5" />
-            <span>연속</span>
+            <span className="hidden sm:inline">연속 스캔</span>
           </button>
 
           {/* Flash Toggle */}
           <button
             onClick={toggleTorch}
             className={`p-2 rounded-full transition-colors ${
-              torchOn ? 'bg-amber-400 text-black' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+              torchOn ? 'bg-amber-400 text-black' : 'bg-slate-800/80 text-slate-300 hover:text-white'
             }`}
             title="플래시 조명"
           >
@@ -305,79 +449,130 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
           {/* Close Button */}
           <button
             onClick={onClose}
-            className="p-2 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
+            className="p-2 rounded-full bg-slate-800/80 text-slate-300 hover:text-white transition-colors ml-1"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
       </div>
 
-      {/* Main Viewfinder Section */}
-      <div className="relative flex-1 flex flex-col items-center justify-center overflow-hidden">
-        {/* Live Camera Stream */}
-        {cameraActive && !capturedImage ? (
-          <video
-            ref={videoRef}
-            playsInline
-            muted
-            className="absolute inset-0 w-full h-full object-cover"
-          />
-        ) : capturedImage ? (
+      {/* Viewfinder Main Viewport */}
+      <div className="relative flex-1 flex flex-col items-center justify-center overflow-hidden bg-slate-950">
+        {/* Always-mounted Video element for real-time camera */}
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          muted
+          controls={false}
+          className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-300 ${
+            cameraActive && isPlaying && !capturedImage ? 'opacity-100' : 'opacity-0 pointer-events-none'
+          }`}
+          onLoadedMetadata={() => {
+            if (videoRef.current) {
+              videoRef.current.play().then(() => setIsPlaying(true)).catch(console.warn);
+            }
+          }}
+          onPlay={() => setIsPlaying(true)}
+          onPause={() => setIsPlaying(false)}
+        />
+
+        {/* Captured image review */}
+        {capturedImage && (
           <img
             src={capturedImage}
             alt="Captured Card"
-            className="absolute inset-0 w-full h-full object-contain bg-slate-950"
+            className="absolute inset-0 w-full h-full object-contain bg-slate-950 z-10"
           />
-        ) : (
-          <div className="flex flex-col items-center justify-center p-6 text-center max-w-sm text-slate-400">
-            <Camera className="w-12 h-12 text-slate-600 mb-3 stroke-1" />
-            <p className="text-sm font-medium text-slate-300 mb-1">카메라 프리뷰 활성화 대기 중</p>
-            <p className="text-xs text-slate-500 mb-4">
-              카메라 권한을 허용하거나 아래 갤러리/샘플 명함으로 즉시 스캔해보세요.
-            </p>
-            <button
-              onClick={startCamera}
-              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold transition-colors flex items-center gap-1.5 shadow-md"
-            >
-              <RefreshCw className="w-3.5 h-3.5" />
-              카메라 다시 시작
-            </button>
+        )}
+
+        {/* Viewfinder Card Alignment Guide Overlay */}
+        {!capturedImage && (
+          <div
+            onClick={handleResumeVideo}
+            className="absolute inset-0 flex flex-col items-center justify-center p-4 z-10 cursor-pointer"
+          >
+            {/* Card Frame Rectangle (85mm x 54mm) */}
+            <div className="relative w-full max-w-[340px] aspect-[1.65/1] rounded-2xl border-2 border-emerald-400 shadow-[0_0_0_9999px_rgba(0,0,0,0.65)] overflow-hidden">
+              {/* Corner Brackets */}
+              <div className="absolute top-2 left-2 w-5 h-5 border-t-3 border-l-3 border-emerald-400" />
+              <div className="absolute top-2 right-2 w-5 h-5 border-t-3 border-r-3 border-emerald-400" />
+              <div className="absolute bottom-2 left-2 w-5 h-5 border-b-3 border-l-3 border-emerald-400" />
+              <div className="absolute bottom-2 right-2 w-5 h-5 border-b-3 border-r-3 border-emerald-400" />
+
+              {/* Animated Laser Scanning Line */}
+              {isPlaying && !isProcessing && (
+                <div className="absolute left-0 right-0 h-0.5 bg-gradient-to-r from-transparent via-emerald-400 to-transparent shadow-[0_0_12px_#34d399] animate-[bounce_2.5s_infinite]" />
+              )}
+
+              {/* Guide label */}
+              <div className="absolute bottom-2.5 inset-x-0 text-center pointer-events-none">
+                <span className="text-[11px] font-semibold bg-black/75 text-emerald-300 px-3 py-1 rounded-full backdrop-blur-md border border-emerald-500/30">
+                  명함을 프레임에 맞춰주세요 (85 × 54mm)
+                </span>
+              </div>
+            </div>
+
+            {/* Tap to Play notice if paused */}
+            {!isPlaying && cameraActive && (
+              <div className="mt-4 bg-slate-900/90 text-white px-4 py-2 rounded-xl text-xs flex items-center gap-2 border border-slate-700 shadow-xl backdrop-blur-md">
+                <Play className="w-4 h-4 text-emerald-400 fill-emerald-400" />
+                <span>화면을 탭하여 카메라 화면을 시작하세요</span>
+              </div>
+            )}
           </div>
         )}
 
-        {/* Viewfinder Overlay Mask with Card Frame (85mm x 54mm = 1.57:1) */}
-        <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center p-4">
-          <div className="relative w-full max-w-[340px] aspect-[1.65/1] rounded-2xl border-2 border-emerald-400/80 shadow-[0_0_0_9999px_rgba(0,0,0,0.65)] overflow-hidden">
-            {/* Viewfinder Corner Crosshairs */}
-            <div className="absolute top-2 left-2 w-4 h-4 border-t-2 border-l-2 border-emerald-400" />
-            <div className="absolute top-2 right-2 w-4 h-4 border-t-2 border-r-2 border-emerald-400" />
-            <div className="absolute bottom-2 left-2 w-4 h-4 border-b-2 border-l-2 border-emerald-400" />
-            <div className="absolute bottom-2 right-2 w-4 h-4 border-b-2 border-r-2 border-emerald-400" />
+        {/* Camera Permission / Fallback Banner if camera cannot start */}
+        {(!cameraActive || cameraError) && !capturedImage && (
+          <div className="absolute inset-0 bg-slate-950/95 flex flex-col items-center justify-center p-6 text-center z-20">
+            <div className="w-16 h-16 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 mb-4 shadow-lg shadow-emerald-950/50">
+              <Smartphone className="w-8 h-8" />
+            </div>
 
-            {/* Animated Laser Scanning Line */}
-            {cameraActive && !isProcessing && (
-              <div className="absolute left-0 right-0 h-0.5 bg-gradient-to-r from-transparent via-emerald-400 to-transparent shadow-[0_0_12px_#34d399] animate-[bounce_2s_infinite]" />
-            )}
+            <h3 className="text-base font-bold text-white mb-1.5">스마트폰 카메라로 촬영</h3>
+            <p className="text-xs text-slate-300 max-w-xs mb-5 leading-relaxed">
+              {cameraError || '스마트폰 기본 카메라 앱으로 명함을 선명하게 촬영하거나 앨범에서 선택할 수 있습니다.'}
+            </p>
 
-            {/* AI OCR Guide Label */}
-            <div className="absolute bottom-2 inset-x-0 text-center">
-              <span className="text-[10px] font-medium bg-black/60 text-emerald-300 px-2.5 py-0.5 rounded-full backdrop-blur-sm">
-                명함을 프레임에 맞춰주세요 (85 × 54mm)
-              </span>
+            <div className="flex flex-col gap-2.5 w-full max-w-xs">
+              <button
+                onClick={() => nativeCameraInputRef.current?.click()}
+                className="w-full py-3 px-4 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-xl text-xs flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/30 active:scale-95 transition-all"
+              >
+                <Camera className="w-4 h-4" />
+                <span>스마트폰 카메라 바로 실행</span>
+              </button>
+
+              <button
+                onClick={() => galleryInputRef.current?.click()}
+                className="w-full py-2.5 px-4 bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-800 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-colors"
+              >
+                <ImageIcon className="w-4 h-4 text-sky-400" />
+                <span>갤러리에서 명함 사진 선택</span>
+              </button>
+
+              <button
+                onClick={() => startCamera()}
+                className="w-full py-2 px-3 text-slate-400 hover:text-white text-xs flex items-center justify-center gap-1.5 transition-colors pt-1"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>웹 브라우저 실시간 카메라 다시 시도</span>
+              </button>
             </div>
           </div>
-        </div>
+        )}
 
         {/* Processing Spinner Overlay */}
         {isProcessing && (
-          <div className="absolute inset-0 bg-black/80 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center z-30">
+          <div className="absolute inset-0 bg-black/85 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center z-30">
             <div className="relative mb-4">
               <div className="w-16 h-16 rounded-full border-4 border-slate-700 border-t-emerald-400 animate-spin" />
               <Sparkles className="w-6 h-6 text-emerald-400 absolute inset-0 m-auto" />
             </div>
             <h4 className="text-base font-bold text-white mb-1">ti-CamCard2Json AI 분석 중</h4>
             <p className="text-xs text-emerald-400 font-mono animate-pulse">{processingStage}</p>
-            <p className="text-[11px] text-slate-500 mt-3 max-w-xs">
+            <p className="text-[11px] text-slate-400 mt-3 max-w-xs">
               이름, 직책, 회사, 전화번호(휴대폰/유선), 이메일, 주소를 구조화된 JSON 및 vCard로 추출하고 있습니다.
             </p>
           </div>
@@ -385,10 +580,10 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
       </div>
 
       {/* Bottom Control Bar */}
-      <div className="bg-slate-950/90 backdrop-blur-md border-t border-slate-800 p-4 z-20 flex flex-col gap-3">
+      <div className="bg-slate-950/95 backdrop-blur-md border-t border-slate-800 p-3 sm:p-4 z-20 flex flex-col gap-2.5 shrink-0">
         {/* Sample Card Quick Tester Bar */}
         <div>
-          <div className="flex items-center justify-between text-xs text-slate-400 mb-2">
+          <div className="flex items-center justify-between text-xs text-slate-400 mb-1.5">
             <span className="flex items-center gap-1 font-medium text-slate-300">
               <Sparkles className="w-3.5 h-3.5 text-amber-400" />
               <span>원클릭 샘플 명함 테스트 (Test Samples):</span>
@@ -396,7 +591,7 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
             <span className="text-[10px] text-slate-500">클릭 즉시 OCR 시뮬레이션</span>
           </div>
 
-          <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-thin">
+          <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
             {SAMPLE_CARDS.map((sample) => (
               <button
                 key={sample.id}
@@ -415,49 +610,44 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
           </div>
         </div>
 
-        {/* Primary Shutter & Gallery Buttons */}
-        <div className="flex items-center justify-around pt-2">
+        {/* Primary Shutter & Mobile Direct Options */}
+        <div className="flex items-center justify-between px-2 pt-1">
           {/* Gallery Picker */}
           <button
-            onClick={() => fileInputRef.current?.click()}
-            className="flex flex-col items-center gap-1 text-slate-400 hover:text-white transition-colors"
+            onClick={() => galleryInputRef.current?.click()}
+            className="flex flex-col items-center gap-1 text-slate-400 hover:text-white transition-colors w-16"
           >
             <div className="w-11 h-11 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-300 hover:bg-slate-800">
-              <ImageIcon className="w-5 h-5" />
+              <ImageIcon className="w-5 h-5 text-sky-400" />
             </div>
             <span className="text-[10px]">앨범 선택</span>
           </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
-            onChange={handleFileUpload}
-            className="hidden"
-          />
 
-          {/* Shutter Button (Capture) */}
-          <button
-            onClick={captureFrame}
-            disabled={isProcessing}
-            className="w-16 h-16 rounded-full bg-emerald-500 hover:bg-emerald-400 active:scale-95 transition-all p-1 shadow-lg shadow-emerald-500/30 flex items-center justify-center"
-          >
-            <div className="w-13 h-13 rounded-full border-2 border-white flex items-center justify-center">
-              <Camera className="w-6 h-6 text-white" />
-            </div>
-          </button>
+          {/* Central Shutter Button */}
+          <div className="flex flex-col items-center gap-1">
+            <button
+              onClick={handleShutterClick}
+              disabled={isProcessing}
+              className="w-16 h-16 rounded-full bg-emerald-500 hover:bg-emerald-400 active:scale-95 transition-all p-1 shadow-lg shadow-emerald-500/40 flex items-center justify-center ring-4 ring-emerald-500/20"
+              title="사진 촬영"
+            >
+              <div className="w-13 h-13 rounded-full border-2 border-white flex items-center justify-center">
+                <Camera className="w-6 h-6 text-white" />
+              </div>
+            </button>
+            <span className="text-[10px] font-medium text-slate-300">촬영하기</span>
+          </div>
 
-          {/* Manual Input Fallback */}
+          {/* Direct Mobile Camera Button (Native Camera App) */}
           <button
-            onClick={() => {
-              const dummySample = SAMPLE_CARDS[0];
-              handleSelectSample(dummySample);
-            }}
-            className="flex flex-col items-center gap-1 text-slate-400 hover:text-white transition-colors"
+            onClick={() => nativeCameraInputRef.current?.click()}
+            className="flex flex-col items-center gap-1 text-slate-400 hover:text-white transition-colors w-16"
+            title="스마트폰 기본 카메라로 고화질 촬영"
           >
-            <div className="w-11 h-11 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-300 hover:bg-slate-800">
-              <Sparkles className="w-5 h-5 text-amber-400" />
+            <div className="w-11 h-11 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-emerald-400 hover:bg-slate-800">
+              <Smartphone className="w-5 h-5" />
             </div>
-            <span className="text-[10px]">데모 인식</span>
+            <span className="text-[10px] text-emerald-400 font-medium">폰 카메라</span>
           </button>
         </div>
       </div>

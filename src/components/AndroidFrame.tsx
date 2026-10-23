@@ -29,8 +29,8 @@ export const AndroidFrame: React.FC<AndroidFrameProps> = ({
   if (!isPhoneFrame) {
     return (
       <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
-        {/* Top Desktop Helper Bar */}
-        <header className="bg-slate-900 border-b border-slate-800 px-4 py-2.5 flex items-center justify-between text-xs text-slate-300">
+        {/* Top Desktop Helper Bar (visible only on desktop) */}
+        <header className="hidden md:flex bg-slate-900 border-b border-slate-800 px-4 py-2.5 items-center justify-between text-xs text-slate-300">
           <div className="flex items-center gap-2">
             <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
             <span className="font-semibold text-slate-100 tracking-wide">CamCard Android</span>
