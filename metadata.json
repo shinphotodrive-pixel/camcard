@@ -1,0 +1,6 @@
+{
+  "name": "CamCard Android - Business Card to JSON & Contact Manager",
+  "description": "Android-style CamCard business card scanner, OCR to JSON extractor, vCard exporter, and digital contact management app based on ti-CamCard2Json.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
