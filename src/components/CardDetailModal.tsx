@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { BusinessCardData } from '../types';
 import { CardVisual } from './CardVisual';
 import { businessCardToVCard, downloadJsonFile, downloadVCard } from '../utils/vcard';
@@ -23,6 +23,9 @@ import {
   MessageSquare,
   Building,
   Briefcase,
+  Save,
+  Lock,
+  FileText,
 } from 'lucide-react';
 
 interface CardDetailModalProps {
@@ -44,8 +47,39 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({
 }) => {
   const [isEditing, setIsEditing] = useState(false);
   const [editForm, setEditForm] = useState<BusinessCardData | null>(null);
+  const [activeTab, setActiveTab] = useState<'info' | 'memo' | 'ocr' | 'photo'>('info');
   const [copied, setCopied] = useState(false);
-  const [activeTab, setActiveTab] = useState<'info' | 'memo' | 'ocr'>('info');
+  const [downloadSuccess, setDownloadSuccess] = useState(false);
+  const [privateNotes, setPrivateNotes] = useState(card?.notes || '');
+  const [notesSaved, setNotesSaved] = useState(false);
+
+  useEffect(() => {
+    if (card) {
+      setPrivateNotes(card.notes || '');
+      setNotesSaved(false);
+    }
+  }, [card?.id, card?.notes]);
+
+  const handleSavePrivateNotes = (textToSave?: string) => {
+    if (!card) return;
+    const finalNotes = typeof textToSave === 'string' ? textToSave : privateNotes;
+    const updated: BusinessCardData = {
+      ...card,
+      notes: finalNotes,
+      updatedAt: new Date().toISOString(),
+    };
+    onUpdateCard(updated);
+    setNotesSaved(true);
+    setTimeout(() => setNotesSaved(false), 2200);
+  };
+
+  const handleDownloadVCard = () => {
+    if (card) {
+      downloadVCard(card);
+      setDownloadSuccess(true);
+      setTimeout(() => setDownloadSuccess(false), 2500);
+    }
+  };
 
   if (!isOpen || !card) return null;
 
@@ -60,6 +94,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({
         ...editForm,
         updatedAt: new Date().toISOString(),
       });
+      setPrivateNotes(editForm.notes || '');
       setIsEditing(false);
     }
   };
@@ -105,6 +140,18 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({
 
           <div className="flex items-center gap-1.5">
             <button
+              onClick={handleDownloadVCard}
+              className="p-2 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors"
+              title="Download vCard (.vcf) file"
+            >
+              {downloadSuccess ? (
+                <Check className="w-4 h-4 text-emerald-400" />
+              ) : (
+                <Download className="w-4 h-4 text-blue-400" />
+              )}
+            </button>
+
+            <button
               onClick={() => onShowQR(card)}
               className="p-2 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors"
               title="vCard QR 코드"
@@ -131,6 +178,19 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({
 
         {/* Scrollable Content Body */}
         <div className="flex-1 overflow-y-auto p-4 sm:p-5 flex flex-col gap-4">
+          {/* Download Success Notification */}
+          {downloadSuccess && (
+            <div className="bg-emerald-950/80 border border-emerald-500/40 text-emerald-200 text-xs px-3.5 py-2.5 rounded-2xl flex items-center justify-between gap-2 shadow-lg animate-in fade-in duration-150">
+              <div className="flex items-center gap-2 truncate">
+                <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span className="truncate">
+                  <strong>{card.name.fullName || 'Contact'}.vcf</strong> 파일이 기기에 다운로드되었습니다.
+                </span>
+              </div>
+              <span className="text-[10px] text-emerald-400 font-mono shrink-0 bg-emerald-900/60 px-2 py-0.5 rounded">vCard 3.0</span>
+            </div>
+          )}
+
           {/* Card Visual Graphic */}
           <div className="w-full max-w-sm mx-auto">
             <CardVisual card={card} interactive={false} />
@@ -217,15 +277,26 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({
               <span className="text-[10px] font-medium text-slate-300">지도</span>
             </a>
 
-            {/* Save to Phone vCard */}
+            {/* Download vCard Button */}
             <button
-              onClick={() => downloadVCard(card)}
-              className="flex flex-col items-center justify-center p-2 rounded-xl hover:bg-slate-800 text-blue-400 active:scale-95 transition-colors"
+              onClick={handleDownloadVCard}
+              className={`flex flex-col items-center justify-center p-2 rounded-xl active:scale-95 transition-all ${
+                downloadSuccess
+                  ? 'bg-emerald-950/60 text-emerald-400 ring-1 ring-emerald-500/50'
+                  : 'hover:bg-slate-800 text-blue-400'
+              }`}
+              title="Download vCard (.vcf) to device"
             >
               <div className="w-8 h-8 rounded-full bg-blue-500/10 flex items-center justify-center mb-1">
-                <Download className="w-4 h-4" />
+                {downloadSuccess ? (
+                  <Check className="w-4 h-4 text-emerald-400" />
+                ) : (
+                  <Download className="w-4 h-4" />
+                )}
               </div>
-              <span className="text-[10px] font-medium text-slate-300">연락처저장</span>
+              <span className="text-[10px] font-medium text-slate-200">
+                {downloadSuccess ? '저장됨' : 'vCard저장'}
+              </span>
             </button>
           </div>
 
@@ -261,6 +332,18 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({
             >
               JSON / OCR 원문
             </button>
+            {card.photoUrl && (
+              <button
+                onClick={() => setActiveTab('photo')}
+                className={`pb-2 px-3 font-semibold transition-colors border-b-2 ${
+                  activeTab === 'photo'
+                    ? 'border-emerald-500 text-emerald-400'
+                    : 'border-transparent text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                촬영 원본 사진
+              </button>
+            )}
           </div>
 
           {/* TAB 1: Detailed Contact Information */}
@@ -495,6 +578,22 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({
               )}
             </div>
           )}
+
+          {/* TAB 4: Original Scanned Photo */}
+          {activeTab === 'photo' && card.photoUrl && (
+            <div className="flex flex-col items-center gap-3 animate-in fade-in">
+              <div className="w-full bg-slate-950 p-2 rounded-2xl border border-slate-800 flex items-center justify-center overflow-hidden">
+                <img
+                  src={card.photoUrl}
+                  alt="명함 원본 사진"
+                  className="w-full max-h-[380px] object-contain rounded-xl shadow-lg"
+                />
+              </div>
+              <p className="text-[11px] text-slate-400">
+                카메라로 촬영하여 스캔된 원본 명함 이미지입니다.
+              </p>
+            </div>
+          )}
         </div>
 
         {/* Footer Delete Button */}
@@ -513,11 +612,20 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({
           </button>
 
           <button
-            onClick={() => downloadVCard(card)}
-            className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-medium transition-colors flex items-center gap-1.5 shadow-md shadow-emerald-900/30"
+            onClick={handleDownloadVCard}
+            className={`px-4 py-2.5 rounded-xl font-semibold text-xs transition-all flex items-center gap-2 shadow-md ${
+              downloadSuccess
+                ? 'bg-emerald-600 text-white shadow-emerald-900/40 ring-2 ring-emerald-400/30'
+                : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-900/30 active:scale-95'
+            }`}
+            title="Download contact as vCard (.vcf) file"
           >
-            <Download className="w-3.5 h-3.5" />
-            <span>vCard 내보내기</span>
+            {downloadSuccess ? (
+              <Check className="w-4 h-4 text-white" />
+            ) : (
+              <Download className="w-4 h-4 text-white" />
+            )}
+            <span>{downloadSuccess ? 'vCard Saved (.vcf)!' : 'Download vCard (.vcf)'}</span>
           </button>
         </div>
       </div>

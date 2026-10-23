@@ -13,9 +13,11 @@ import {
   Play,
   AlertCircle,
   Smartphone,
+  Edit3,
 } from 'lucide-react';
 import { BusinessCardData } from '../types';
 import { SAMPLE_CARDS } from '../data/sampleCards';
+import { compressCardImage } from '../utils/imageCompressor';
 
 interface ScannerModalProps {
   isOpen: boolean;
@@ -36,6 +38,7 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingStage, setProcessingStage] = useState('');
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
+  const [scanError, setScanError] = useState<string | null>(null);
   const [batchMode, setBatchMode] = useState(false);
   const [batchCount, setBatchCount] = useState(0);
 
@@ -71,6 +74,7 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
   // Start camera stream with multi-level fallbacks
   const startCamera = useCallback(async (desiredFacing = facingMode) => {
     setCameraError(null);
+    setScanError(null);
     stopCamera();
 
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -79,7 +83,6 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
     }
 
     const constraintsList = [
-      // 1. Ideal environment resolution
       {
         video: {
           facingMode: { ideal: desiredFacing },
@@ -88,14 +91,12 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
         },
         audio: false,
       },
-      // 2. Exact or standard facingMode
       {
         video: {
           facingMode: desiredFacing,
         },
         audio: false,
       },
-      // 3. Fallback generic video
       {
         video: true,
         audio: false,
@@ -148,6 +149,7 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
   useEffect(() => {
     if (isOpen) {
       setCapturedImage(null);
+      setScanError(null);
       setIsProcessing(false);
       startCamera();
     } else {
@@ -200,11 +202,28 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
     startCamera(nextFacing);
   };
 
+  // Process and compress image before sending to AI
+  const handleImageCaptureComplete = async (source: string | File) => {
+    try {
+      setIsProcessing(true);
+      setScanError(null);
+      setProcessingStage('명함 이미지 최적화 및 고화질 압축 중...');
+
+      const compressed = await compressCardImage(source, 1600, 0.85);
+      setCapturedImage(compressed.dataUrl);
+
+      await processCardImage(compressed.cleanBase64, compressed.dataUrl);
+    } catch (err: any) {
+      console.error('Image optimization failed:', err);
+      setIsProcessing(false);
+      setScanError(err.message || '이미지 처리에 실패했습니다.');
+    }
+  };
+
   // Primary Shutter capture
   const handleShutterClick = () => {
     const video = videoRef.current;
 
-    // Check if video is playing with valid dimension
     if (video && video.readyState >= 2 && video.videoWidth > 0 && !video.paused) {
       try {
         const canvas = document.createElement('canvas');
@@ -214,8 +233,7 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
         if (ctx) {
           ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
           const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
-          setCapturedImage(dataUrl);
-          processCardImage(dataUrl);
+          handleImageCaptureComplete(dataUrl);
           return;
         }
       } catch (err) {
@@ -223,7 +241,7 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
       }
     }
 
-    // If stream is not active or frame cannot be grabbed, open native mobile camera!
+    // Fallback: open native camera
     nativeCameraInputRef.current?.click();
   };
 
@@ -232,21 +250,14 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // Reset input value so same photo can be re-selected if needed
     e.target.value = '';
-
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const base64 = event.target?.result as string;
-      setCapturedImage(base64);
-      processCardImage(base64);
-    };
-    reader.readAsDataURL(file);
+    handleImageCaptureComplete(file);
   };
 
   // Quick select a sample card for instant demo testing
   const handleSelectSample = (sample: (typeof SAMPLE_CARDS)[0]) => {
     setIsProcessing(true);
+    setScanError(null);
     setProcessingStage('샘플 명함 로드 및 OCR 분석 중...');
 
     setTimeout(() => {
@@ -273,25 +284,29 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
         setBatchCount((prev) => prev + 1);
         setCapturedImage(null);
       }
-    }, 600);
+    }, 500);
   };
 
   // Send to server-side Gemini OCR endpoint
-  const processCardImage = async (base64Img: string) => {
+  const processCardImage = async (cleanBase64: string, previewDataUrl: string) => {
     setIsProcessing(true);
-    setProcessingStage('명함 윤곽 검출 및 고화질 향상 중...');
+    setScanError(null);
+    setProcessingStage('CamCard2Json AI OCR 분석 중...');
 
     try {
-      setTimeout(() => setProcessingStage('CamCard2Json OCR 엔터티 분석 중...'), 350);
-
       const res = await fetch('/api/card-to-json', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          imageBase64: base64Img,
+          imageBase64: cleanBase64,
           mimeType: 'image/jpeg',
         }),
       });
+
+      if (!res.ok) {
+        const errorJson = await res.json().catch(() => null);
+        throw new Error(errorJson?.error || `서버 응답 오류 (HTTP ${res.status})`);
+      }
 
       const result = await res.json();
       setProcessingStage('연락처 데이터 파싱 및 vCard 생성 완료!');
@@ -309,7 +324,7 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
           jobTitle: d.jobTitle || '',
           department: d.department || '',
           company: {
-            name: d.company?.name || '회사명 미확인',
+            name: d.company?.name || '',
             division: d.company?.division || '',
           },
           phones: {
@@ -335,7 +350,7 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
           notes: d.notes || '',
           rawText: d.rawText || '',
           tags: d.tags && d.tags.length > 0 ? d.tags : ['신규스캔'],
-          photoUrl: base64Img,
+          photoUrl: previewDataUrl,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
           cardColorTheme: ['navy', 'slate', 'emerald', 'purple', 'crimson'][Math.floor(Math.random() * 5)] as any,
@@ -350,31 +365,39 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
           } else {
             onClose();
           }
-        }, 400);
+        }, 300);
       } else {
-        throw new Error(result.error || 'OCR 분석 실패');
+        throw new Error(result.error || '명함 정보를 추출하지 못했습니다.');
       }
     } catch (err: any) {
       console.error('Scan processing error:', err);
-      const fallbackCard: BusinessCardData = {
-        id: 'card_' + Date.now(),
-        name: { fullName: '스캔 명함', firstName: '', lastName: '' },
-        jobTitle: '담당자',
-        department: '',
-        company: { name: '비즈니스 파트너' },
-        phones: { mobile: '010-0000-0000' },
-        emails: { primary: 'contact@partner.com' },
-        address: { formatted: '서울특별시 강남구' },
-        websites: [],
-        tags: ['스캔완료'],
-        photoUrl: base64Img,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
       setIsProcessing(false);
-      onCardScanned(fallbackCard, fallbackCard);
-      if (!batchMode) onClose();
+      setScanError(err.message || '명함 OCR 인식에 실패했습니다. 사진을 다시 촬영해주세요.');
     }
+  };
+
+  // Fallback: create card with photo for manual editing
+  const handleCreateManualWithPhoto = () => {
+    if (!capturedImage) return;
+    const manualCard: BusinessCardData = {
+      id: 'card_' + Date.now(),
+      name: { fullName: '새 명함', firstName: '', lastName: '' },
+      jobTitle: '',
+      department: '',
+      company: { name: '' },
+      phones: { mobile: '' },
+      emails: { primary: '' },
+      address: { formatted: '' },
+      websites: [],
+      tags: ['직접입력'],
+      photoUrl: capturedImage,
+      notes: '촬영된 명함 사진을 바탕으로 등록되었습니다.',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      cardColorTheme: 'navy',
+    };
+    onCardScanned(manualCard, manualCard);
+    onClose();
   };
 
   if (!isOpen) return null;
@@ -563,6 +586,43 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
           </div>
         )}
 
+        {/* Scan Error Notification Modal */}
+        {scanError && (
+          <div className="absolute inset-0 bg-black/85 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center z-40 animate-in fade-in">
+            <div className="w-14 h-14 rounded-2xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-400 mb-3">
+              <AlertCircle className="w-7 h-7" />
+            </div>
+
+            <h4 className="text-sm font-bold text-white mb-1.5">명함 분석 안내</h4>
+            <p className="text-xs text-slate-300 max-w-xs mb-5 leading-relaxed bg-slate-900/80 p-3 rounded-xl border border-slate-800">
+              {scanError}
+            </p>
+
+            <div className="flex flex-col gap-2 w-full max-w-xs text-xs">
+              <button
+                onClick={() => {
+                  setScanError(null);
+                  setCapturedImage(null);
+                }}
+                className="w-full py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-xl flex items-center justify-center gap-2 shadow-md transition-colors"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>다시 촬영하기</span>
+              </button>
+
+              {capturedImage && (
+                <button
+                  onClick={handleCreateManualWithPhoto}
+                  className="w-full py-2.5 px-4 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-semibold rounded-xl flex items-center justify-center gap-2 transition-colors"
+                >
+                  <Edit3 className="w-3.5 h-3.5 text-sky-400" />
+                  <span>사진 저장 및 직접 정보 입력</span>
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Processing Spinner Overlay */}
         {isProcessing && (
           <div className="absolute inset-0 bg-black/85 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center z-30">
@@ -570,10 +630,10 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
               <div className="w-16 h-16 rounded-full border-4 border-slate-700 border-t-emerald-400 animate-spin" />
               <Sparkles className="w-6 h-6 text-emerald-400 absolute inset-0 m-auto" />
             </div>
-            <h4 className="text-base font-bold text-white mb-1">ti-CamCard2Json AI 분석 중</h4>
+            <h4 className="text-base font-bold text-white mb-1">CamCard AI 정밀 분석 중</h4>
             <p className="text-xs text-emerald-400 font-mono animate-pulse">{processingStage}</p>
-            <p className="text-[11px] text-slate-400 mt-3 max-w-xs">
-              이름, 직책, 회사, 전화번호(휴대폰/유선), 이메일, 주소를 구조화된 JSON 및 vCard로 추출하고 있습니다.
+            <p className="text-[11px] text-slate-400 mt-3 max-w-xs leading-relaxed">
+              성명, 직책, 회사명, 휴대폰 및 유선전화 번호, 이메일, 주소를 정확하게 파싱하고 있습니다.
             </p>
           </div>
         )}

@@ -125,34 +125,63 @@ app.post('/api/card-to-json', async (req, res) => {
       });
     }
 
-    // Call Gemini 3.8 Flash with structured schema
-    const prompt = `You are a high-precision OCR and entity extraction engine modeled after CamCard and ti-CamCard2Json.
-Extract all details from this business card into clean, valid JSON.
-- Identify Full Name, First Name, Last Name (for Korean cards, split appropriately e.g. 김(Kim) 철수(Cheolsu)).
-- Detect Job Title/Position (e.g. CEO, 대표이사, 수석연구원, Director, Senior Software Engineer) and Department.
-- Detect Company / Organization Name cleanly.
-- Categorize Phone Numbers accurately:
-  * mobile: cellular numbers (e.g. Korea 010-xxxx-xxxx, US (xxx) xxx-xxxx)
-  * work: landline / office numbers (e.g. 02-xxx-xxxx, 031-xxx-xxxx)
-  * fax: facsimile numbers
-- Detect Email addresses, Websites, Physical Office Address (with postal code if visible).
-- Detect any Social links (LinkedIn, GitHub, X/Twitter, etc.).
-- Infer a relevant Industry tag (e.g. "IT & Software", "Finance & Banking", "Manufacturing", "Bio & Healthcare", "Design & Media", "Legal & Consulting", etc.).
-- Transcribe the complete raw OCR text as rawText.`;
-
+    // Sanitize Base64 image
     const parts: any[] = [];
     if (imageBase64) {
-      const cleanBase64 = imageBase64.replace(/^data:[a-zA-Z0-9/]+;base64,/, '');
+      let cleanBase64 = imageBase64.trim();
+      const commaIdx = cleanBase64.indexOf(',');
+      if (commaIdx !== -1 && cleanBase64.slice(0, commaIdx).includes('base64')) {
+        cleanBase64 = cleanBase64.slice(commaIdx + 1);
+      }
+      cleanBase64 = cleanBase64.replace(/\s/g, '');
+
+      let detectedMime = mimeType || 'image/jpeg';
+      const mimeMatch = imageBase64.match(/^data:([^;,]+);/);
+      if (mimeMatch && mimeMatch[1]) {
+        detectedMime = mimeMatch[1];
+      }
+
       parts.push({
         inlineData: {
-          mimeType: mimeType,
+          mimeType: detectedMime,
           data: cleanBase64,
         },
       });
     }
+
     if (manualText) {
       parts.push({ text: `Raw text from card:\n${manualText}` });
     }
+
+    const prompt = `You are CamCard AI, an ultra-precise business card OCR and entity extraction engine modeled after ti-CamCard2Json.
+Analyze this business card image carefully and extract all contact and company details into JSON.
+- name:
+  * fullName: Full personal name as written (Korean, English, Japanese, Chinese, etc.)
+  * firstName: Given name
+  * lastName: Family name (e.g. 김, 이, 박, 최, Smith, Tanaka)
+  * titleHonorific: Any honorific or title (e.g. 박사, 변호사, Ph.D., 회장)
+- jobTitle: Job title or position (e.g. CEO, 대표이사, 수석연구원, 팀장, 매니저, Director). If none, empty string.
+- department: Department or team name. If none, empty string.
+- company:
+  * name: Company or organization name.
+  * division: Division or branch name.
+- phones:
+  * mobile: Cellular phone number (e.g. 010-xxxx-xxxx, +82 10-xxxx-xxxx).
+  * work: Office landline phone (e.g. 02-xxx-xxxx, 031-xxx-xxxx).
+  * fax: Fax number.
+- emails:
+  * primary: Primary email address. If none found, empty string.
+  * secondary: Secondary email if present.
+- address:
+  * formatted: Full street/building address. If none found, empty string.
+  * street, city, state, postalCode, country
+- websites: Array of website URLs (e.g. ["https://company.com"]).
+- socialLinks: linkedin, twitter, github, instagram.
+- industry: Relevant industry category (e.g. "IT & Software", "Finance", "Healthcare", "Legal", "Consulting", "Design").
+- notes: Slogan, taglines, or additional certifications.
+- rawText: Complete raw text transcribed line by line from the card.
+Never invent fictional details. If a field is not on the card, use empty string "".`;
+
     parts.push({ text: prompt });
 
     const response = await ai.models.generateContent({
@@ -171,7 +200,6 @@ Extract all details from this business card into clean, valid JSON.
                 lastName: { type: Type.STRING },
                 titleHonorific: { type: Type.STRING },
               },
-              required: ['fullName'],
             },
             jobTitle: { type: Type.STRING },
             department: { type: Type.STRING },
@@ -181,7 +209,6 @@ Extract all details from this business card into clean, valid JSON.
                 name: { type: Type.STRING },
                 division: { type: Type.STRING },
               },
-              required: ['name'],
             },
             phones: {
               type: Type.OBJECT,
@@ -198,7 +225,6 @@ Extract all details from this business card into clean, valid JSON.
                 primary: { type: Type.STRING },
                 secondary: { type: Type.STRING },
               },
-              required: ['primary'],
             },
             address: {
               type: Type.OBJECT,
@@ -232,13 +258,31 @@ Extract all details from this business card into clean, valid JSON.
             },
             rawText: { type: Type.STRING },
           },
-          required: ['name', 'company', 'phones', 'emails'],
         },
       },
     });
 
     const text = response.text || '{}';
-    const parsedData = JSON.parse(text);
+    let parsedData: any = {};
+    try {
+      parsedData = JSON.parse(text);
+    } catch (parseErr) {
+      const match = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+      if (match) {
+        parsedData = JSON.parse(match[1]);
+      } else {
+        throw parseErr;
+      }
+    }
+
+    // Ensure fallback safety for sub-objects
+    if (!parsedData.name) parsedData.name = { fullName: '이름 미확인' };
+    if (!parsedData.company) parsedData.company = { name: '' };
+    if (!parsedData.phones) parsedData.phones = {};
+    if (!parsedData.emails) parsedData.emails = { primary: '' };
+    if (!parsedData.address) parsedData.address = { formatted: '' };
+    if (!Array.isArray(parsedData.websites)) parsedData.websites = [];
+    if (!Array.isArray(parsedData.tags)) parsedData.tags = ['스캔완료'];
 
     // Generate standard vCard
     const vcard = generateVCard(parsedData);
